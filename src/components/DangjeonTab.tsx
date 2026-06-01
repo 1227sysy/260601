@@ -2,75 +2,87 @@
 
 import { useEffect, useState, useRef } from "react";
 import type { EChartsOption } from "echarts";
-import type { DangjeonItem } from "@/types/cheongyak";
 
-let ECharts: typeof import("echarts") | null = null;
+interface AreaItem {
+  SUBSCRPT_AREA_CODE_NM: string;
+  SUBSCRPT_AREA_CODE?: string;
+  AGE_30: number; AGE_40: number; AGE_50: number; AGE_60: number;
+  STAT_DE?: string;
+  // mock compat
+  SIDO?: string; WIN_CNT?: number;
+}
+
+// API 짧은 지역명 → GeoJSON 지역명 매핑
+const SHORT_TO_GEO: Record<string, string> = {
+  "서울": "서울특별시", "경기": "경기도", "인천": "인천광역시",
+  "부산": "부산광역시", "대구": "대구광역시", "광주": "광주광역시",
+  "대전": "대전광역시", "울산": "울산광역시", "세종": "세종특별자치시",
+  "강원": "강원도", "충북": "충청북도", "충남": "충청남도",
+  "전북": "전라북도", "전남": "전라남도", "경북": "경상북도",
+  "경남": "경상남도", "제주": "제주특별자치도",
+};
+
+const SHORT_LABELS = Object.fromEntries(Object.entries(SHORT_TO_GEO).map(([k, v]) => [v, k]));
+
+let EC: typeof import("echarts") | null = null;
 let mapRegistered = false;
 
-const SIDO_LABEL_MAP: Record<string, string> = {
-  "서울특별시": "서울",
-  "부산광역시": "부산",
-  "대구광역시": "대구",
-  "인천광역시": "인천",
-  "광주광역시": "광주",
-  "대전광역시": "대전",
-  "울산광역시": "울산",
-  "세종특별자치시": "세종",
-  "경기도": "경기",
-  "강원도": "강원",
-  "충청북도": "충북",
-  "충청남도": "충남",
-  "전라북도": "전북",
-  "전라남도": "전남",
-  "경상북도": "경북",
-  "경상남도": "경남",
-  "제주특별자치도": "제주",
-};
-
-// GeoJSON name → our SIDO name
-const GEO_TO_SIDO: Record<string, string> = {
-  "서울특별시": "서울특별시",
-  "부산광역시": "부산광역시",
-  "대구광역시": "대구광역시",
-  "인천광역시": "인천광역시",
-  "광주광역시": "광주광역시",
-  "대전광역시": "대전광역시",
-  "울산광역시": "울산광역시",
-  "세종특별자치시": "세종특별자치시",
-  "경기도": "경기도",
-  "강원도": "강원도",
-  "충청북도": "충청북도",
-  "충청남도": "충청남도",
-  "전라북도": "전라북도",
-  "전라남도": "전라남도",
-  "경상북도": "경상북도",
-  "경상남도": "경상남도",
-  "제주특별자치도": "제주특별자치도",
-};
-
 export default function DangjeonTab() {
-  const [data, setData] = useState<DangjeonItem[]>([]);
+  const [data, setData] = useState<AreaItem[]>([]);
+  const [source, setSource] = useState<"api" | "mock">("mock");
   const [loading, setLoading] = useState(true);
+
   const mapRef = useRef<HTMLDivElement>(null);
   const ageRef = useRef<HTMLDivElement>(null);
-  const scoreRef = useRef<HTMLDivElement>(null);
-  const mapChartRef = useRef<import("echarts").ECharts | null>(null);
-  const ageChartRef = useRef<import("echarts").ECharts | null>(null);
-  const scoreChartRef = useRef<import("echarts").ECharts | null>(null);
+  const trendRef = useRef<HTMLDivElement>(null);
+  const mapChart = useRef<import("echarts").ECharts | null>(null);
+  const ageChart = useRef<import("echarts").ECharts | null>(null);
+  const trendChart = useRef<import("echarts").ECharts | null>(null);
 
   useEffect(() => {
-    fetch("/api/cheongyak/dangjeon")
+    fetch("/api/cheongyak/dangjeon?type=area")
       .then((r) => r.json())
-      .then((d) => setData(d.data))
+      .then((d) => { setData(d.data); setSource(d.source); })
       .finally(() => setLoading(false));
   }, []);
+
+  // 지역별 집계
+  const areaAgg: Record<string, { total: number; short: string }> = {};
+  data.forEach((item) => {
+    const short = item.SUBSCRPT_AREA_CODE_NM || (item.SIDO ? SHORT_LABELS[item.SIDO] || item.SIDO : "");
+    const total = (item.AGE_30 || 0) + (item.AGE_40 || 0) + (item.AGE_50 || 0) + (item.AGE_60 || 0);
+    if (short) {
+      areaAgg[short] = { total: (areaAgg[short]?.total || 0) + total, short };
+    }
+  });
+
+  // 연령별 전국 집계
+  const ageTotal = { "30대이하": 0, "40대": 0, "50대": 0, "60대이상": 0 };
+  data.forEach((item) => {
+    ageTotal["30대이하"] += item.AGE_30 || 0;
+    ageTotal["40대"] += item.AGE_40 || 0;
+    ageTotal["50대"] += item.AGE_50 || 0;
+    ageTotal["60대이상"] += item.AGE_60 || 0;
+  });
+
+  // 월별 추이 (상위 3개 지역)
+  const monthData: Record<string, Record<string, number>> = {};
+  data.forEach((item) => {
+    const month = item.STAT_DE || "unknown";
+    const short = item.SUBSCRPT_AREA_CODE_NM || "";
+    if (!monthData[month]) monthData[month] = {};
+    const total = (item.AGE_30 || 0) + (item.AGE_40 || 0) + (item.AGE_50 || 0) + (item.AGE_60 || 0);
+    monthData[month][short] = (monthData[month][short] || 0) + total;
+  });
+  const months = Object.keys(monthData).sort();
+  const topAreas = Object.entries(areaAgg).sort((a, b) => b[1].total - a[1].total).slice(0, 4).map(([k]) => k);
 
   useEffect(() => {
     if (!data.length) return;
 
-    async function renderCharts() {
+    async function render() {
       const ec = await import("echarts");
-      ECharts = ec;
+      EC = ec;
 
       if (!mapRegistered) {
         try {
@@ -78,146 +90,91 @@ export default function DangjeonTab() {
           const geoJson = await geoRes.json();
           ec.registerMap("korea", geoJson);
           mapRegistered = true;
-        } catch {
-          console.warn("Failed to load Korea map GeoJSON");
-        }
+        } catch { /* no map */ }
       }
 
-      // Aggregate win counts by sido
-      const sidoWins: Record<string, number> = {};
-      data.forEach((item) => {
-        sidoWins[item.SIDO] = (sidoWins[item.SIDO] || 0) + item.WIN_CNT;
-      });
-
-      const mapData = Object.entries(GEO_TO_SIDO).map(([geoName, sidoName]) => ({
-        name: geoName,
-        value: sidoWins[sidoName] || 0,
-      }));
+      const maxVal = Math.max(...Object.values(areaAgg).map((v) => v.total));
 
       if (mapRef.current && mapRegistered) {
-        if (!mapChartRef.current) mapChartRef.current = ec.init(mapRef.current);
-        const opt: EChartsOption = {
+        if (!mapChart.current) mapChart.current = ec.init(mapRef.current);
+        mapChart.current.setOption({
           backgroundColor: "transparent",
           tooltip: {
             trigger: "item",
-            formatter: (params: unknown) => {
-              const p = params as { name: string; value: number };
-              const sido = GEO_TO_SIDO[p.name] || p.name;
-              const short = SIDO_LABEL_MAP[sido] || sido;
-              return `${short}<br/>당첨자 수: <b>${(p.value || 0).toLocaleString()}명</b>`;
+            formatter: (p: unknown) => {
+              const item = p as { name: string; value: number };
+              const short = SHORT_LABELS[item.name] || item.name;
+              return `${short}<br/>당첨자 합계: <b>${(item.value || 0).toLocaleString()}명</b>`;
             },
           },
-          visualMap: {
-            min: 0,
-            max: Math.max(...Object.values(sidoWins)),
-            left: "left",
-            top: "bottom",
-            text: ["높음", "낮음"],
-            calculable: true,
-            inRange: { color: ["#1e3a5f", "#3b82f6", "#06b6d4"] },
-            textStyle: { color: "#94a3b8" },
-          },
+          visualMap: { min: 0, max: maxVal, left: "left", top: "bottom", text: ["높음", "낮음"], calculable: true, inRange: { color: ["#1e3a5f", "#3b82f6", "#06b6d4"] }, textStyle: { color: "#94a3b8" } },
           series: [{
-            name: "당첨자 수",
-            type: "map",
-            map: "korea",
-            roam: true,
-            data: mapData,
-            emphasis: { label: { show: true, color: "#fff" }, itemStyle: { areaColor: "#f59e0b" } },
-            label: { show: true, color: "#94a3b8", fontSize: 10, formatter: (p: { name: string }) => SIDO_LABEL_MAP[p.name] || p.name },
+            name: "당첨자 수", type: "map", map: "korea", roam: true,
+            data: Object.entries(SHORT_TO_GEO).map(([short, geo]) => ({
+              name: geo, value: areaAgg[short]?.total || 0,
+            })),
+            emphasis: { itemStyle: { areaColor: "#f59e0b" }, label: { show: true, color: "#fff" } },
+            label: { show: true, color: "#94a3b8", fontSize: 10, formatter: (p: { name: string }) => SHORT_LABELS[p.name] || p.name },
             itemStyle: { borderColor: "#475569", borderWidth: 1 },
           }],
-        };
-        mapChartRef.current.setOption(opt, true);
+        } as EChartsOption, true);
       }
-
-      // Age chart
-      const ages = ["20대", "30대", "40대", "50대"];
-      const applyByAge = ages.map((age) =>
-        data.filter((d) => d.AGE_GBN === age).reduce((sum, d) => sum + d.APPLY_CNT, 0)
-      );
-      const winByAge = ages.map((age) =>
-        data.filter((d) => d.AGE_GBN === age).reduce((sum, d) => sum + d.WIN_CNT, 0)
-      );
 
       if (ageRef.current) {
-        if (!ageChartRef.current) ageChartRef.current = ec.init(ageRef.current);
-        const opt: EChartsOption = {
+        if (!ageChart.current) ageChart.current = ec.init(ageRef.current);
+        const ages = Object.keys(ageTotal);
+        const vals = Object.values(ageTotal);
+        ageChart.current.setOption({
           backgroundColor: "transparent",
-          tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
-          legend: { textStyle: { color: "#94a3b8" } },
-          xAxis: { type: "category", data: ages, axisLabel: { color: "#94a3b8" }, axisLine: { lineStyle: { color: "#334155" } } },
-          yAxis: [
-            { type: "value", name: "신청", axisLabel: { color: "#94a3b8", formatter: (v: number) => v >= 1000 ? `${(v / 1000).toFixed(0)}k` : String(v) }, splitLine: { lineStyle: { color: "#334155" } } },
-            { type: "value", name: "당첨", axisLabel: { color: "#94a3b8", formatter: (v: number) => v >= 1000 ? `${(v / 1000).toFixed(0)}k` : String(v) }, splitLine: { show: false } },
-          ],
-          series: [
-            { name: "신청자", type: "bar", data: applyByAge, itemStyle: { color: "#3b82f6" }, label: { show: false } },
-            { name: "당첨자", type: "bar", yAxisIndex: 1, data: winByAge, itemStyle: { color: "#10b981" }, label: { show: false } },
-          ],
-          grid: { left: 50, right: 50, top: 40, bottom: 30 },
-        };
-        ageChartRef.current.setOption(opt, true);
+          tooltip: { trigger: "item", formatter: (p: unknown) => {
+            const item = p as { name: string; value: number; percent: number };
+            return `${item.name}<br/>${item.value.toLocaleString()}명 (${item.percent}%)`;
+          }},
+          series: [{
+            type: "pie", radius: "70%",
+            data: ages.map((a, i) => ({ name: a, value: vals[i], itemStyle: { color: ["#3b82f6","#10b981","#f59e0b","#8b5cf6"][i] } })),
+            label: { color: "#94a3b8", formatter: "{b}\n{d}%" },
+          }],
+        } as EChartsOption, true);
       }
 
-      // Score multi-line chart
-      const sidoList = [...new Set(data.map((d) => d.SIDO))].slice(0, 5);
-      const scoreRanks = ["저", "중", "고"];
-
-      if (scoreRef.current) {
-        if (!scoreChartRef.current) scoreChartRef.current = ec.init(scoreRef.current);
-        const colors = ["#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#ef4444"];
-        const series = sidoList.map((sido, i) => {
-          const winData = scoreRanks.map((rank) => {
-            const items = data.filter((d) => d.SIDO === sido && d.SCORE_RANK === rank);
-            return items.reduce((sum, d) => sum + d.WIN_CNT, 0);
-          });
-          return {
-            name: SIDO_LABEL_MAP[sido] || sido,
-            type: "line" as const,
-            data: winData,
-            smooth: true,
-            lineStyle: { color: colors[i] },
-            itemStyle: { color: colors[i] },
-          };
-        });
-
-        const opt: EChartsOption = {
+      if (trendRef.current && months.length > 1) {
+        if (!trendChart.current) trendChart.current = ec.init(trendRef.current);
+        const colors = ["#3b82f6","#10b981","#f59e0b","#8b5cf6"];
+        trendChart.current.setOption({
           backgroundColor: "transparent",
           tooltip: { trigger: "axis" },
-          legend: { textStyle: { color: "#94a3b8" } },
-          xAxis: { type: "category", data: ["저가점", "중가점", "고가점"], axisLabel: { color: "#94a3b8" }, axisLine: { lineStyle: { color: "#334155" } } },
-          yAxis: { type: "value", name: "당첨자", axisLabel: { color: "#94a3b8" }, splitLine: { lineStyle: { color: "#334155" } } },
-          series,
-          grid: { left: 50, right: 20, top: 40, bottom: 30 },
-        };
-        scoreChartRef.current.setOption(opt, true);
+          legend: { textStyle: { color: "#94a3b8" }, bottom: 0 },
+          xAxis: { type: "category", data: months.map((m) => m.slice(0, 4) + "." + m.slice(4)), axisLabel: { color: "#94a3b8", rotate: 30, fontSize: 10 }, axisLine: { lineStyle: { color: "#334155" } } },
+          yAxis: { type: "value", axisLabel: { color: "#94a3b8" }, splitLine: { lineStyle: { color: "#334155" } } },
+          series: topAreas.map((area, i) => ({
+            name: area,
+            type: "line",
+            smooth: true,
+            data: months.map((m) => monthData[m]?.[area] || 0),
+            itemStyle: { color: colors[i] },
+            lineStyle: { color: colors[i] },
+          })),
+          grid: { left: 50, right: 20, top: 30, bottom: 60 },
+        } as EChartsOption, true);
       }
     }
-
-    renderCharts();
+    render();
   }, [data]);
 
-  const sidoSummary = Object.entries(
-    data.reduce<Record<string, { apply: number; win: number }>>((acc, item) => {
-      if (!acc[item.SIDO]) acc[item.SIDO] = { apply: 0, win: 0 };
-      acc[item.SIDO].apply += item.APPLY_CNT;
-      acc[item.SIDO].win += item.WIN_CNT;
-      return acc;
-    }, {})
-  )
-    .map(([sido, v]) => ({ sido, ...v, rate: ((v.win / v.apply) * 100).toFixed(2) }))
-    .sort((a, b) => b.win - a.win);
+  const areaRows = Object.entries(areaAgg)
+    .sort((a, b) => b[1].total - a[1].total);
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-8">
-      <h2 className="text-2xl font-bold text-white mb-6">당첨 분석</h2>
+      <div className="flex items-center gap-3 mb-6">
+        <h2 className="text-2xl font-bold text-white">당첨 분석</h2>
+        {source === "api" && <span className="text-xs bg-emerald-900 text-emerald-300 px-2 py-0.5 rounded">실시간 API</span>}
+      </div>
 
       {loading ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="bg-slate-800 rounded-xl border border-slate-700 p-4 h-80 animate-pulse" />
-          ))}
+          {[0, 1, 2].map((i) => <div key={i} className="bg-slate-800 rounded-xl border border-slate-700 h-80 animate-pulse" />)}
         </div>
       ) : (
         <>
@@ -226,49 +183,47 @@ export default function DangjeonTab() {
               <h3 className="text-white font-semibold mb-3">지역별 당첨자 수 (코로플레스 지도)</h3>
               <div ref={mapRef} style={{ height: 360 }} />
             </div>
-            <div>
-              <div className="bg-slate-800 rounded-xl border border-slate-700 p-4 mb-4">
-                <h3 className="text-white font-semibold mb-3">연령별 신청 vs 당첨</h3>
-                <div ref={ageRef} style={{ height: 220 }} />
-              </div>
+            <div className="flex flex-col gap-4">
               <div className="bg-slate-800 rounded-xl border border-slate-700 p-4">
-                <h3 className="text-white font-semibold mb-3">지역별 가점 구간 당첨 추이</h3>
-                <div ref={scoreRef} style={{ height: 220 }} />
+                <h3 className="text-white font-semibold mb-3">연령대별 당첨자 비율</h3>
+                <div ref={ageRef} style={{ height: 200 }} />
               </div>
+              {months.length > 1 && (
+                <div className="bg-slate-800 rounded-xl border border-slate-700 p-4">
+                  <h3 className="text-white font-semibold mb-3">지역별 월별 당첨 추이 (상위 4개 지역)</h3>
+                  <div ref={trendRef} style={{ height: 200 }} />
+                </div>
+              )}
             </div>
           </div>
 
           <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
             <div className="px-4 py-3 border-b border-slate-700">
-              <h3 className="text-white font-semibold">지역별 당첨 통계</h3>
+              <h3 className="text-white font-semibold">지역별 당첨자 통계</h3>
             </div>
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-slate-700 bg-slate-900">
                   <th className="text-left text-slate-400 px-4 py-3 font-medium">지역</th>
-                  <th className="text-right text-slate-400 px-4 py-3 font-medium">총 신청자</th>
-                  <th className="text-right text-slate-400 px-4 py-3 font-medium">당첨자</th>
-                  <th className="text-right text-slate-400 px-4 py-3 font-medium">당첨률</th>
-                  <th className="text-left text-slate-400 px-4 py-3 font-medium">비율 바</th>
+                  <th className="text-right text-slate-400 px-4 py-3 font-medium">당첨자 합계</th>
+                  <th className="text-left text-slate-400 px-4 py-3 font-medium">비율</th>
                 </tr>
               </thead>
               <tbody>
-                {sidoSummary.map((row, i) => (
-                  <tr key={i} className="border-b border-slate-700/50 hover:bg-slate-750 transition-colors">
-                    <td className="px-4 py-3 text-white font-medium">{SIDO_LABEL_MAP[row.sido] || row.sido}</td>
-                    <td className="px-4 py-3 text-right text-slate-300">{row.apply.toLocaleString()}</td>
-                    <td className="px-4 py-3 text-right text-emerald-400 font-medium">{row.win.toLocaleString()}</td>
-                    <td className="px-4 py-3 text-right text-amber-400 font-medium">{row.rate}%</td>
-                    <td className="px-4 py-3">
-                      <div className="w-full bg-slate-700 rounded-full h-2">
-                        <div
-                          className="bg-blue-500 h-2 rounded-full"
-                          style={{ width: `${Math.min(parseFloat(row.rate) * 4, 100)}%` }}
-                        />
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {areaRows.map(([area, { total }], i) => {
+                  const max = areaRows[0][1].total;
+                  return (
+                    <tr key={i} className="border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors">
+                      <td className="px-4 py-3 text-white font-medium">{area}</td>
+                      <td className="px-4 py-3 text-right text-emerald-400 font-medium">{total.toLocaleString()}</td>
+                      <td className="px-4 py-3 w-48">
+                        <div className="w-full bg-slate-700 rounded-full h-2">
+                          <div className="bg-blue-500 h-2 rounded-full transition-all" style={{ width: `${(total / max) * 100}%` }} />
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
